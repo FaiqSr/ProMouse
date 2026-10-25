@@ -11,6 +11,7 @@ internal static class Program
     private const uint SDL_EVENT_GAMEPAD_BUTTON_UP = 0x651;
     private const uint SDL_EVENT_GAMEPAD_ADDED = 0x653;
     private const uint SDL_EVENT_GAMEPAD_REMOVED = 0x654;
+    private const uint SDL_EVENT_KEY_DOWN = 0x300;
     private const int SDL_SENSOR_GYRO = 2;
     private const uint SDL_BUTTON_SOUTH = 0, SDL_BUTTON_EAST = 1, SDL_BUTTON_WEST = 2, SDL_BUTTON_NORTH = 3;
     private const uint SDL_BUTTON_BACK = 4, SDL_BUTTON_START = 6, SDL_BUTTON_LEFT_STICK = 7, SDL_BUTTON_RIGHT_STICK = 8;
@@ -24,12 +25,21 @@ internal static class Program
     private static bool prevSouth, prevEast, prevWest, prevNorth, prevBack, prevStart, prevL3, prevR3, prevLB, prevRB;
     private static bool prevL2, prevR2, gyroEnabled = true, gyroHeld;
     private static bool prevUp, prevDown, prevLeft, prevRight;
-    private static readonly float StickDeadzone = 0.12f;
-    private static readonly float MouseStickGain = 14f;
-    private static readonly float ScrollMaxSpeed = 30f;
+    private static float StickDeadzone = 0.12f;
+    private static float MouseStickGain = 14f;
+    private static float StickCurve = 2f;
+    private static float ScrollMaxSpeed = 30f;
+    private static float GyroGain = 24f, GyroDeadzone = 0.035f, GyroCalibrationSeconds = 1.5f;
+    private static float VerticalScrollDirection = 1f, HorizontalScrollDirection = 1f;
+    private static readonly float[] gyroBias = new float[3];
+    private static readonly float[] gyroCalibrationSum = new float[3];
+    private static int gyroCalibrationSamples;
+    private static long gyroCalibrationStarted;
+    private static string controllerStatus = "Terputus";
     private static float scrollRemainder, horizontalScrollRemainder;
+    private static float gyroMouseRemainderX, gyroMouseRemainderY;
     private static long lastScrollUpdate;
-    private static long lastMove;
+    private static long lastMove, lastStatusUpdate;
     private static readonly float[] gyro = new float[3];
 
     [STAThread]
@@ -37,6 +47,7 @@ internal static class Program
     {
         Console.OutputEncoding = Encoding.UTF8;
         Tray.Initialize();
+        LoadConfig();
         SetConsoleCtrlHandler(CtrlHandler, true);
         SDL_SetHint("SDL_JOYSTICK_ENHANCED_REPORTS", "1");
         if (!SDL_Init(SDL_INIT_JOYSTICK | SDL_INIT_GAMEPAD))
@@ -54,7 +65,10 @@ internal static class Program
                 if (e.type == SDL_EVENT_GAMEPAD_ADDED && gamepad == IntPtr.Zero) OpenGamepad(e.gdevice.which);
                 if (e.type == SDL_EVENT_GAMEPAD_REMOVED && e.gdevice.which == SDL_GetGamepadInstanceID(gamepad)) CloseGamepad();
                 if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN && e.gbutton.button == SDL_BUTTON_NORTH) ToggleConsole();
+                if (e.type == SDL_EVENT_KEY_DOWN && e.key.key == 0x4000003E) LoadConfig();
             }
+            long statusNow = Environment.TickCount64;
+            if (statusNow - lastStatusUpdate >= 1000) { UpdateStatus(); lastStatusUpdate = statusNow; }
             if (gamepad != IntPtr.Zero) ReadInput();
             Thread.Sleep(5);
         }
@@ -73,12 +87,61 @@ internal static class Program
     private static void OpenGamepad(uint id)
     {
         gamepad = SDL_OpenGamepad(id);
-        if (gamepad == IntPtr.Zero) { Console.WriteLine("Gagal membuka controller: " + Marshal.PtrToStringUTF8(SDL_GetError())); return; }
-        Console.WriteLine("Terhubung: " + Marshal.PtrToStringUTF8(SDL_GetGamepadName(gamepad)));
+        if (gamepad == IntPtr.Zero) { controllerStatus = "Gagal terhubung"; Console.WriteLine("Gagal membuka controller: " + Marshal.PtrToStringUTF8(SDL_GetError())); return; }
+        controllerStatus = Marshal.PtrToStringUTF8(SDL_GetGamepadName(gamepad)) ?? "Terhubung";
+        Console.WriteLine("Terhubung: " + controllerStatus);
+        ResetGyroCalibration();
         if (SDL_GamepadHasSensor(gamepad, SDL_SENSOR_GYRO)) SDL_SetGamepadSensorEnabled(gamepad, SDL_SENSOR_GYRO, true);
         else Console.WriteLine("Gyro tidak terdeteksi oleh SDL untuk device ini.");
     }
-    private static void CloseGamepad() { ReleaseAll(); if (gamepad != IntPtr.Zero) SDL_CloseGamepad(gamepad); gamepad = IntPtr.Zero; Console.WriteLine("Controller terputus."); }
+    private static void CloseGamepad() { ReleaseAll(); if (gamepad != IntPtr.Zero) SDL_CloseGamepad(gamepad); gamepad = IntPtr.Zero; controllerStatus = "Terputus"; Console.WriteLine("Controller terputus."); }
+    private static void UpdateStatus()
+    {
+        string state = $"Controller: {(gamepad != IntPtr.Zero ? controllerStatus : "Terputus")} | Gyro: {(gyroEnabled ? "aktif" : "mati")} | Input: {(active ? "aktif" : "dijeda")}";
+        if (visible)
+        {
+            try
+            {
+                int row = Console.CursorTop;
+                Console.Write("\r" + state.PadRight(Math.Max(0, Console.WindowWidth - 1)));
+                Console.SetCursorPosition(0, row);
+            }
+            catch (IOException) { visible = false; }
+            catch (InvalidOperationException) { visible = false; }
+        }
+        Tray.SetStatus(state);
+    }
+
+    private static void LoadConfig()
+    {
+        const string defaults = "; ProMouse config — perubahan dibaca saat startup atau F5\nStickDeadzone=0.12\nMouseStickGain=14\nStickCurve=2\nGyroGain=24\nGyroDeadzone=0.035\nGyroCalibrationSeconds=1.5\nScrollMaxSpeed=30\nVerticalScrollDirection=1\nHorizontalScrollDirection=1\n";
+        string path = Path.Combine(AppContext.BaseDirectory, "config.ini");
+        if (!File.Exists(path)) File.WriteAllText(path, defaults);
+        var values = new Dictionary<string, float>(StringComparer.OrdinalIgnoreCase);
+        foreach (string line in File.ReadAllLines(path))
+        {
+            string[] pair = line.Split('=', 2);
+            if (pair.Length == 2 && float.TryParse(pair[1].Trim(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float value) && float.IsFinite(value)) values[pair[0].Trim()] = value;
+        }
+        float Get(string key, float fallback, float min, float max) => values.TryGetValue(key, out float value) ? Math.Clamp(value, min, max) : fallback;
+        StickDeadzone = Get("StickDeadzone", 0.12f, 0f, 0.8f);
+        MouseStickGain = Get("MouseStickGain", 14f, 0f, 500f);
+        StickCurve = Get("StickCurve", 2f, 0.2f, 5f);
+        GyroGain = Get("GyroGain", 24f, 0f, 1000f);
+        GyroDeadzone = Get("GyroDeadzone", 0.035f, 0f, 10f);
+        GyroCalibrationSeconds = Get("GyroCalibrationSeconds", 1.5f, 0.1f, 10f);
+        ScrollMaxSpeed = Get("ScrollMaxSpeed", 30f, 0f, 500f);
+        VerticalScrollDirection = Get("VerticalScrollDirection", 1f, -1f, 1f) < 0 ? -1f : 1f;
+        HorizontalScrollDirection = Get("HorizontalScrollDirection", 1f, -1f, 1f) < 0 ? -1f : 1f;
+        Console.WriteLine("Config dimuat: " + path);
+    }
+
+    private static void ResetGyroCalibration()
+    {
+        Array.Clear(gyroBias); Array.Clear(gyroCalibrationSum);
+        gyroCalibrationSamples = 0; gyroCalibrationStarted = Environment.TickCount64;
+        gyroMouseRemainderX = gyroMouseRemainderY = 0;
+    }
 
     private static void ReadInput()
     {
@@ -87,23 +150,45 @@ internal static class Program
             long now = Environment.TickCount64;
             if (now - lastMove >= 8)
             {
-                int dx = StickDelta(Axis(0), MouseStickGain), dy = StickDelta(Axis(1), MouseStickGain); // left stick: horizontal, vertical
-                if (gyroEnabled && SDL_GetGamepadSensorData(gamepad, SDL_SENSOR_GYRO, gyro, 3) && !gyroHeld)
+                float elapsedMove = Math.Clamp((now - lastMove) / 1000f, 0f, 0.05f);
+                int dx = StickDelta(Axis(0), MouseStickGain), dy = StickDelta(Axis(1), MouseStickGain);
+                if (gyroEnabled && !gyroHeld)
                 {
-                    dx += (int)(-gyro[1] * 24);
-                    dy += (int)(-gyro[0] * 24);
+                    if (SDL_GetGamepadSensorData(gamepad, SDL_SENSOR_GYRO, gyro, 3))
+                    {
+                        if (gyroCalibrationSamples >= 0)
+                        {
+                            if (now - gyroCalibrationStarted < (long)(GyroCalibrationSeconds * 1000))
+                            {
+                                for (int i = 0; i < 3; i++) gyroCalibrationSum[i] += gyro[i];
+                                gyroCalibrationSamples++;
+                            }
+                            else if (gyroCalibrationSamples > 0)
+                            {
+                                for (int i = 0; i < 3; i++) gyroBias[i] = gyroCalibrationSum[i] / gyroCalibrationSamples;
+                                gyroCalibrationSamples = -1;
+                                Console.WriteLine("Kalibrasi gyro selesai.");
+                            }
+                        }
+                        if (gyroCalibrationSamples == -1)
+                        {
+                            gyroMouseRemainderX += -ApplyGyroDeadzone(gyro[1] - gyroBias[1]) * GyroGain * elapsedMove;
+                            gyroMouseRemainderY += -ApplyGyroDeadzone(gyro[0] - gyroBias[0]) * GyroGain * elapsedMove;
+                            int gyroDx = (int)gyroMouseRemainderX, gyroDy = (int)gyroMouseRemainderY;
+                            dx += gyroDx; dy += gyroDy;
+                            gyroMouseRemainderX -= gyroDx; gyroMouseRemainderY -= gyroDy;
+                        }
+                    }
                 }
                 if (dx != 0 || dy != 0) MouseMove(dx, dy);
                 lastMove = now;
             }
             float elapsed = Math.Clamp((now - lastScrollUpdate) / 1000f, 0f, 0.03f);
             lastScrollUpdate = now;
-            float x = ApplyDeadzone(Axis(2));
-            float y = ApplyDeadzone(Axis(3));
-            scrollRemainder += -y * ScrollMaxSpeed * elapsed;
+            scrollRemainder += -ApplyDeadzone(Axis(3)) * ScrollMaxSpeed * VerticalScrollDirection * elapsed;
             int wheel = (int)scrollRemainder;
             if (wheel != 0) { MouseWheel(wheel); scrollRemainder -= wheel; }
-            horizontalScrollRemainder += x * ScrollMaxSpeed * elapsed;
+            horizontalScrollRemainder += ApplyDeadzone(Axis(2)) * ScrollMaxSpeed * HorizontalScrollDirection * elapsed;
             int horizontalWheel = (int)horizontalScrollRemainder;
             if (horizontalWheel != 0) { MouseHorizontalWheel(horizontalWheel); horizontalScrollRemainder -= horizontalWheel; }
         }
@@ -118,7 +203,12 @@ internal static class Program
         if (active)
         {
             SetMouse(1, south, prevSouth); SetMouse(0, east, prevEast);
-            if (Pressed(r3, prevR3)) { gyroEnabled = !gyroEnabled; Console.WriteLine(gyroEnabled ? "Gyro aktif." : "Gyro nonaktif."); }
+            if (Pressed(r3, prevR3))
+            {
+                gyroEnabled = !gyroEnabled;
+                if (gyroEnabled) ResetGyroCalibration();
+                Console.WriteLine(gyroEnabled ? "Gyro aktif — tahan controller diam untuk kalibrasi." : "Gyro nonaktif.");
+            }
             if (Pressed(rb, prevRB)) TapAltTab(false);
             if (Pressed(lb, prevLB)) TapAltTab(true);
             if (Pressed(r2, prevR2)) TapKey(0x09, false);
@@ -135,8 +225,13 @@ internal static class Program
         prevLB = lb; prevRB = rb; prevL2 = l2; prevR2 = r2; prevUp = up; prevDown = down; prevLeft = left; prevRight = right;
     }
 
-    private static int StickDelta(float raw, float gain) => (int)(ApplyDeadzone(raw) * gain);
+    private static int StickDelta(float raw, float gain)
+    {
+        float value = ApplyDeadzone(raw);
+        return (int)(MathF.CopySign(MathF.Pow(Math.Abs(value), StickCurve), value) * gain);
+    }
     private static float ApplyDeadzone(float raw) => Math.Abs(raw) <= StickDeadzone ? 0f : MathF.CopySign((Math.Abs(raw) - StickDeadzone) / (1f - StickDeadzone), raw);
+    private static float ApplyGyroDeadzone(float value) => Math.Abs(value) <= GyroDeadzone ? 0f : MathF.CopySign(Math.Abs(value) - GyroDeadzone, value);
     private static float Axis(int axis) => SDL_GetGamepadAxis(gamepad, axis) / 32768f;
     private static void MouseWheel(int amount) { var input = new INPUT { type = 0, U = new INPUTUNION { mi = new MOUSEINPUT { mouseData = unchecked((uint)(amount * 120)), dwFlags = 0x0800 } } }; SendInput(1, new[] { input }, Marshal.SizeOf<INPUT>()); }
     private static void MouseHorizontalWheel(int amount) { var input = new INPUT { type = 0, U = new INPUTUNION { mi = new MOUSEINPUT { mouseData = unchecked((uint)(amount * 120)), dwFlags = 0x1000 } } }; SendInput(1, new[] { input }, Marshal.SizeOf<INPUT>()); }
@@ -180,7 +275,8 @@ internal static class Program
     [DllImport("SDL3.dll", CallingConvention=CallingConvention.Cdecl)] private static extern bool SDL_SetHint(string name, string value);
     [DllImport("SDL3.dll", CallingConvention=CallingConvention.Cdecl)] private static extern IntPtr SDL_GetError();
 
-    [StructLayout(LayoutKind.Explicit, Size=128)] private struct SDL_Event { [FieldOffset(0)] public uint type; [FieldOffset(16)] public SDL_DeviceEvent gdevice; [FieldOffset(16)] public SDL_ButtonEvent gbutton; }
+    [StructLayout(LayoutKind.Explicit, Size=128)] private struct SDL_Event { [FieldOffset(0)] public uint type; [FieldOffset(16)] public SDL_DeviceEvent gdevice; [FieldOffset(16)] public SDL_ButtonEvent gbutton; [FieldOffset(16)] public SDL_KeyboardEvent key; }
+    [StructLayout(LayoutKind.Sequential)] private struct SDL_KeyboardEvent { public uint type; public uint reserved; public ulong timestamp; public uint windowID; public uint which; public int key; public ushort scancode; public ushort mod; public ushort raw; public byte down; public byte repeat; }
     [StructLayout(LayoutKind.Sequential)] private struct SDL_DeviceEvent { public uint type; public uint padding; public ulong timestamp; public uint which; }
     [StructLayout(LayoutKind.Sequential)] private struct SDL_ButtonEvent { public uint type; public uint padding; public ulong timestamp; public uint which; public byte button; public byte down; }
 
@@ -190,6 +286,7 @@ internal static class Program
         private System.Windows.Forms.NotifyIcon? icon;
         public NotifyIcon() { thread = new Thread(() => { icon = new System.Windows.Forms.NotifyIcon { Text = "ProMouse", Icon = System.Drawing.SystemIcons.Application, Visible = true, ContextMenuStrip = new System.Windows.Forms.ContextMenuStrip() }; icon.ContextMenuStrip.Items.Add("Tampilkan/sembunyikan CLI", null, (_,_) => ToggleConsole()); icon.ContextMenuStrip.Items.Add("Jeda/aktifkan input", null, (_,_) => { active = !active; if (!active) ReleaseAll(); Console.WriteLine(active ? "Input aktif." : "Input dijeda."); }); icon.ContextMenuStrip.Items.Add("Keluar", null, (_,_) => running = false); System.Windows.Forms.Application.Run(); }) { IsBackground = true }; thread.SetApartmentState(ApartmentState.STA); thread.Start(); }
         public void Initialize() { Thread.Sleep(200); }
+        public void SetStatus(string text) { try { if (icon is not null) icon.Text = text.Length > 63 ? text[..63] : text; } catch { } }
         public void Dispose() { if (icon is not null) icon.Visible = false; }
     }
 }
