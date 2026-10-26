@@ -55,7 +55,7 @@ internal static class Program
         OpenFirstGamepad();
         Console.WriteLine("ProMouse — Switch Pro Controller ke mouse & keyboard");
         Console.WriteLine("Y: sembunyikan/tampilkan CLI  |  Ctrl+C: keluar  |  Tray: klik kanan untuk kontrol");
-        Console.WriteLine("Analog kiri/gyro = gerakkan mouse; analog kanan = scroll. R3 toggle gyro. R1/L1 = Alt-Tab/Alt-Shift-Tab; R2/L2 = tab browser berikut/sebelumnya.");
+        Console.WriteLine("Analog kiri/gyro = gerakkan mouse; analog kanan = scroll. R3 toggle gyro. R1/L1 = Alt-Tab/Alt-Shift-Tab; R2/L2 = Ctrl+Tab/Ctrl+Shift+Tab.");
         Console.WriteLine("A klik kiri, B klik kanan, X klik tengah, + Windows, D-pad panah.");
 
         while (running)

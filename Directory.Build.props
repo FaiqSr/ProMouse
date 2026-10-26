@@ -1,0 +1,6 @@
+<Project>
+  <PropertyGroup>
+    <BaseOutputPath>$(MSBuildThisFileDirectory)bin\</BaseOutputPath>
+    <DefaultItemExcludes>$(DefaultItemExcludes);obj\**;src\obj\**</DefaultItemExcludes>
+  </PropertyGroup>
+</Project>
