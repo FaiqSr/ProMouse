@@ -56,7 +56,8 @@ internal static class Program
         Console.WriteLine("ProMouse — Switch Pro Controller ke mouse & keyboard");
         Console.WriteLine("Y: sembunyikan/tampilkan CLI  |  Ctrl+C: keluar  |  Tray: klik kanan untuk kontrol");
         Console.WriteLine("Analog kiri/gyro = gerakkan mouse; analog kanan = scroll. R3 toggle gyro. R1/L1 = Alt-Tab/Alt-Shift-Tab; R2/L2 = tab browser berikut/sebelumnya.");
-        Console.WriteLine("A klik kiri, B klik kanan, X Enter, + Windows, D-pad panah.");
+        Console.WriteLine("A klik kiri, B klik kanan, X klik tengah, + Windows, D-pad panah.");
+
         while (running)
         {
             while (SDL_PollEvent(out var e))
@@ -202,7 +203,7 @@ internal static class Program
         gyroHeld = l3;
         if (active)
         {
-            SetMouse(1, south, prevSouth); SetMouse(0, east, prevEast);
+            SetMouse(1, south, prevSouth); SetMouse(0, east, prevEast); SetMouse(2, west, prevWest);
             if (Pressed(r3, prevR3))
             {
                 gyroEnabled = !gyroEnabled;
@@ -211,9 +212,8 @@ internal static class Program
             }
             if (Pressed(rb, prevRB)) TapAltTab(false);
             if (Pressed(lb, prevLB)) TapAltTab(true);
-            if (Pressed(r2, prevR2)) TapKey(0x09, false);
-            if (Pressed(l2, prevL2)) TapKey(0x09, true);
-            if (Pressed(west, prevWest)) Key(0x0D, true); if (Released(west, prevWest)) Key(0x0D, false);
+            if (Pressed(r2, prevR2)) TapCtrlTab(false);
+            if (Pressed(l2, prevL2)) TapCtrlTab(true);
             if (Pressed(back, prevBack)) Key(0x20, true); if (Released(back, prevBack)) Key(0x20, false);
             if (Pressed(start, prevStart)) Key(0x5B, true); if (Released(start, prevStart)) Key(0x5B, false);
             if (Pressed(up, prevUp)) Key(0x26, true); if (Released(up, prevUp)) Key(0x26, false);
@@ -243,8 +243,30 @@ internal static class Program
     private static void ReleaseAll() { for (uint i = 0; i < 3; i++) MouseButton(i, false); foreach (ushort k in new ushort[] { 0x09,0x10,0x12,0x0D,0x20,0x5B,0x26,0x28,0x25,0x27 }) Key(k, false); }
     private static readonly ConsoleHandler CtrlHandler = _ => { running = false; ReleaseAll(); return true; };
 
+    private static void TapCtrlTab(bool reverse)
+    {
+        INPUT KeyInput(ushort key, bool down) => new() { type = 1, U = new INPUTUNION { ki = new KEYBDINPUT { wVk = key, dwFlags = down ? 0u : 2u } } };
+        var inputs = reverse
+            ? new[] { KeyInput(0x11, true), KeyInput(0x10, true), KeyInput(0x09, true), KeyInput(0x09, false), KeyInput(0x10, false), KeyInput(0x11, false) }
+            : new[] { KeyInput(0x11, true), KeyInput(0x09, true), KeyInput(0x09, false), KeyInput(0x11, false) };
+        SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<INPUT>());
+    }
     private static void TapAltTab(bool reverse) { Key(0x12, true); if (reverse) Key(0x10, true); Key(0x09, true); Key(0x09, false); if (reverse) Key(0x10, false); Key(0x12, false); }
-    private static void TapKey(ushort vk, bool shift) { if (shift) Key(0x10, true); Key(vk, true); Key(vk, false); if (shift) Key(0x10, false); }
+    private static void TapKey(ushort vk, bool shift)
+    {
+        INPUT KeyInput(ushort key, bool down) => new() { type = 1, U = new INPUTUNION { ki = new KEYBDINPUT { wVk = key, dwFlags = down ? 0u : 2u } } };
+        if (!shift)
+        {
+            var inputs = new[] { KeyInput(vk, true), KeyInput(vk, false) };
+            SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<INPUT>());
+            return;
+        }
+        var shiftDown = KeyInput(0x10, true);
+        SendInput(1, new[] { shiftDown }, Marshal.SizeOf<INPUT>());
+        Thread.Sleep(50);
+        var shiftedTap = new[] { KeyInput(vk, true), KeyInput(vk, false), KeyInput(0x10, false) };
+        SendInput((uint)shiftedTap.Length, shiftedTap, Marshal.SizeOf<INPUT>());
+    }
     private static void Key(ushort vk, bool down) { var input = new INPUT { type = 1, U = new INPUTUNION { ki = new KEYBDINPUT { wVk = vk, dwFlags = down ? 0u : 2u } } }; SendInput(1, new[] { input }, Marshal.SizeOf<INPUT>()); }
     private static void MouseButton(uint b, bool down) { uint flag = b switch { 0 => down ? 0x0002u : 0x0004u, 1 => down ? 0x0008u : 0x0010u, 2 => down ? 0x0020u : 0x0040u, 3 => down ? 0x0800u : 0x1000u, _ => down ? 0x0800u : 0x1000u }; var input = new INPUT { type = 0, U = new INPUTUNION { mi = new MOUSEINPUT { dwFlags = flag } } }; SendInput(1, new[] { input }, Marshal.SizeOf<INPUT>()); }
     private static void MouseMove(int dx, int dy) { var input = new INPUT { type = 0, U = new INPUTUNION { mi = new MOUSEINPUT { dx = dx, dy = dy, dwFlags = 0x0001 } } }; SendInput(1, new[] { input }, Marshal.SizeOf<INPUT>()); }
