@@ -27,7 +27,7 @@ Use the left stick and gyro to move the pointer, the right stick to scroll, and 
 - **Live configuration** — edit `config.ini` and press F5 to reload settings.
 - **Tray controls and status** — see controller connection, gyro, and input pause state; pause or resume from the tray menu.
 - **Controller reconnect** — detects disconnects and opens a controller again when it reconnects.
-- **Mouse and keyboard bindings** — controller buttons provide clicks, Enter, Space, Windows, arrows, Alt-Tab, and browser tab shortcuts.
+- **Mouse and keyboard bindings** — controller buttons provide mouse clicks, Space, Windows, arrows, Alt-Tab, and Ctrl+Tab shortcuts.
 - **Windows cursor** — uses the system's normal cursor; ProMouse does not replace it.
 
 ## Requirements
@@ -56,13 +56,9 @@ dotnet build ProMouse.csproj -p:PublishAot=false -p:SelfContained=false
 dotnet publish ProMouse.csproj -c Release -r win-x64 --self-contained true -p:PublishAot=false
 ```
 
-The release executable is written to:
+To use the Windows-specific build script, run `Build-ProMouse.bat` from the repository root. It publishes to `bin/Release/net10.0-windows/win-x64/publish-new/ProMouse.exe` using the configured local .NET SDK. The standard command above publishes to `bin/Release/net10.0-windows/win-x64/publish/ProMouse.exe`.
 
-```text
-bin/Release/net10.0-windows/win-x64/publish/ProMouse.exe
-```
-
-Run `Jalankan-ProMouse.bat` from the repository root to launch that published build and keep the console open after exit.
+Run `Jalankan-ProMouse.bat` from the repository root to launch the standard published build and keep the console open after exit.
 
 ## Controls
 
@@ -74,11 +70,12 @@ Run `Jalankan-ProMouse.bat` from the repository root to launch that published bu
 | Right stick left/right | Horizontal scroll |
 | A | Left mouse click |
 | B | Right mouse click |
-| X | Enter |
+| X | Middle mouse click |
 | + | Windows key |
 | D-pad | Arrow keys |
 | R1 / L1 | Alt-Tab / reverse Alt-Tab |
-| R2 / L2 | Next / previous browser tab |
+| R2 | Ctrl+Tab |
+| L2 | Ctrl+Shift+Tab |
 | Y | Show or hide the CLI |
 | Tray menu | Pause/resume input, show/hide CLI, or quit |
 | F5 | Reload `config.ini` |
